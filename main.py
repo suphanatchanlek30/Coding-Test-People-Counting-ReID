@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from pathlib import Path
 
 from tqdm import tqdm
 
 from src.config.settings import load_settings
+from src.debug_video_writer import DebugVideoWriter
 from src.io.video import VideoReader
 from src.utils import ensure_dir
 from src.vision.tracking import MultiObjectTracker
+from src.visualization.renderer import TrackingPreview
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +29,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional limit for quick tracking tests.",
     )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show OpenCV preview window. Press q to stop.",
+    )
     return parser.parse_args()
 
 
@@ -39,6 +47,7 @@ def main() -> None:
     video_cfg = config["video"]
     detection_cfg = config["detection"]
     tracking_cfg = config["tracking"]
+    debug_video_cfg = config.get("debug_video", {})
 
     reader = VideoReader(
         video_path=video_cfg["input_path"],
@@ -52,11 +61,18 @@ def main() -> None:
         iou_threshold=detection_cfg["iou_threshold"],
         min_box_area=detection_cfg["min_box_area"],
     )
+    renderer = TrackingPreview(
+        max_trajectory_points=config.get("preview", {}).get("max_trajectory_points", 30),
+    )
 
     info = reader.info()
+    output_video_path = debug_video_cfg.get(
+        "output_path",
+        "outputs/debug_tracking_preview.mp4",
+    )
 
     print("Smart Entrance People Analytics")
-    print("Step 3: YOLO multi-object tracking test.")
+    print("Step 4: annotated tracking video preview.")
     print()
     print(f"Processing video: {info.path}")
     print(f"FPS: {info.fps:.2f}")
@@ -64,8 +80,10 @@ def main() -> None:
     print(f"Total frames: {info.total_frames}")
     print(f"Detector model: {detection_cfg['model_name']}")
     print(f"Tracker: {tracking_cfg['tracker_type']}")
+    print(f"Output video: {output_video_path}")
     print()
 
+    writer = None
     processed_frames = 0
     total_active_tracks_seen = 0
     max_tracks_in_frame = 0
@@ -84,6 +102,27 @@ def main() -> None:
                 timestamp=video_frame.timestamp,
             )
 
+            annotated_frame = renderer.draw(
+                frame=video_frame.frame,
+                tracked_objects=tracked_objects,
+                frame_id=video_frame.frame_id,
+            )
+
+            if writer is None:
+                frame_h, frame_w = annotated_frame.shape[:2]
+                writer = DebugVideoWriter(
+                    output_path=output_video_path,
+                    fps=float(debug_video_cfg.get("fps") or info.fps),
+                    frame_size=(frame_w, frame_h),
+                )
+
+            writer.write(annotated_frame)
+
+            if args.show:
+                if not renderer.show(annotated_frame):
+                    print("Preview stopped by user.")
+                    break
+
             active_count = len(tracked_objects)
 
             processed_frames += 1
@@ -93,6 +132,15 @@ def main() -> None:
 
     finally:
         reader.release()
+
+        if writer is not None:
+            writer.release()
+
+        if args.show:
+            try:
+                renderer.close()
+            except Exception:
+                pass
 
     track_states = tracker.get_track_states()
     min_track_length = tracking_cfg["min_track_length"]
@@ -108,7 +156,7 @@ def main() -> None:
     )
 
     print()
-    print("Multi-object tracking test completed.")
+    print("Annotated tracking video completed.")
     print(f"Processed frames: {processed_frames}")
     print(f"Raw track IDs found: {len(track_states)}")
     print(f"Valid track IDs with length >= {min_track_length}: {len(valid_tracks)}")
@@ -116,24 +164,8 @@ def main() -> None:
     print(f"Max active tracks in one frame: {max_tracks_in_frame}")
 
     print()
-    print("Track count distribution:")
-    for track_count, frame_count in sorted(track_count_distribution.items()):
-        print(f"  {track_count} active track(s): {frame_count} frame(s)")
-
-    print()
-    print("Top track summaries:")
-    for track_id, state in sorted(
-        valid_tracks.items(),
-        key=lambda item: item[1].hits,
-        reverse=True,
-    )[:10]:
-        print(
-            f"  track_id={track_id}, "
-            f"hits={state.hits}, "
-            f"first_frame={state.first_frame}, "
-            f"last_frame={state.last_frame}, "
-            f"avg_conf={state.avg_confidence:.2f}"
-        )
+    print("Saved:")
+    print(f"* {Path(output_video_path)}")
 
 
 if __name__ == "__main__":

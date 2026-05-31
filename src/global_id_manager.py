@@ -49,6 +49,15 @@ class GlobalPersonProfile:
     avg_confidence: float = 0.0
     category_votes: Counter[str] = field(default_factory=Counter)
     category_conf_sum: Counter[str] = field(default_factory=Counter)
+    feature_samples: list[np.ndarray] = field(default_factory=list)
+
+    @property
+    def duration_seconds(self) -> float:
+        return max(0.0, self.last_seen - self.first_seen)
+
+    @property
+    def frame_span(self) -> int:
+        return max(0, self.last_frame - self.first_frame + 1)
 
     def final_category(self) -> tuple[str, float]:
         if not self.category_votes:
@@ -91,6 +100,33 @@ class GlobalPersonProfile:
         category, votes = self.category_votes.most_common(1)[0]
         confidence_sum = self.category_conf_sum[category]
         return category, float(confidence_sum / max(1, votes))
+
+    def appearance_similarity(
+        self,
+        reid: ColorHistogramReID,
+        feature: np.ndarray | None,
+    ) -> float:
+        if self.feature is None:
+            return 0.0
+
+        stable_similarity = reid.similarity(feature, self.feature)
+        sample_similarities = [
+            reid.similarity(feature, sample)
+            for sample in self.feature_samples
+            if sample is not None
+        ]
+        if not sample_similarities:
+            return stable_similarity
+
+        sample_similarities.sort(reverse=True)
+        top_sample_similarity = sample_similarities[0]
+        if len(sample_similarities) > 1:
+            top_sample_similarity = (
+                0.7 * sample_similarities[0] + 0.3 * sample_similarities[1]
+            )
+
+        blended_similarity = 0.70 * stable_similarity + 0.30 * top_sample_similarity
+        return float(min(1.0, blended_similarity))
 
 
 class GlobalIDManager:
@@ -172,6 +208,7 @@ class GlobalIDManager:
 
         best_global_id = None
         best_score = 0.0
+        required_score = self.appearance_threshold
 
         for global_id, profile in self.memory.items():
             if global_id in active_global_ids:
@@ -179,6 +216,15 @@ class GlobalIDManager:
 
             time_gap = tracked_object.timestamp - profile.last_seen
             if time_gap < 0 or time_gap > self.max_time_gap_seconds:
+                continue
+
+            if profile.hits < 3 and time_gap > 2.5:
+                continue
+
+            if profile.hits < 5 and time_gap > 10.0:
+                continue
+
+            if profile.hits < 8 and time_gap > 18.0:
                 continue
 
             distance = self._distance(tracked_object.center, profile.last_position)
@@ -189,14 +235,28 @@ class GlobalIDManager:
             ):
                 continue
 
-            color_score = (
-                self.reid.similarity(feature, profile.feature)
-                if profile.feature is not None
-                else 0.0
-            )
+            color_score = profile.appearance_similarity(self.reid, feature)
             spatial_score = max(0.0, 1.0 - distance / self.max_spatial_distance)
             temporal_score = max(0.0, 1.0 - time_gap / self.max_time_gap_seconds)
             category_score = self._category_consistency_score(profile, attribute)
+            if self._has_conflicting_category(profile, attribute):
+                if color_score < self.appearance_threshold + 0.12:
+                    continue
+
+            required_score = self.appearance_threshold
+            if profile.hits < 5:
+                required_score += 0.04
+            elif profile.hits < 8:
+                required_score += 0.02
+
+            if profile.duration_seconds < 2.0:
+                required_score += 0.02
+
+            if time_gap > 12.0:
+                required_score += 0.01
+
+            if distance > self.max_spatial_distance * 0.85:
+                required_score += 0.01
 
             score = (
                 self.color_weight * color_score
@@ -206,14 +266,14 @@ class GlobalIDManager:
             )
 
             if self.allow_long_gap_reentry and distance > self.max_spatial_distance:
-                if color_score < self.appearance_threshold + 0.08:
+                if color_score < required_score + 0.03:
                     continue
 
             if score > best_score:
                 best_score = score
                 best_global_id = global_id
 
-        if best_global_id is not None and best_score >= self.appearance_threshold:
+        if best_global_id is not None and best_score >= required_score:
             return best_global_id
 
         return self._create_profile_id()
@@ -253,10 +313,12 @@ class GlobalIDManager:
         if profile.feature is None:
             profile.feature = feature
         else:
-            alpha = 0.85
+            alpha = 0.92 if profile.hits > 20 else 0.85
             profile.feature = (
                 alpha * profile.feature + (1.0 - alpha) * feature
             ).astype(np.float32)
+
+        self._remember_feature_sample(profile, feature)
 
         profile.category_votes[attribute.category] += 1
         profile.category_conf_sum[attribute.category] += attribute.confidence
@@ -283,3 +345,34 @@ class GlobalIDManager:
             return 0.25
 
         return -0.5
+
+    @staticmethod
+    def _has_conflicting_category(
+        profile: GlobalPersonProfile,
+        attribute: AttributePrediction,
+    ) -> bool:
+        if profile.hits < 8:
+            return False
+
+        profile_category, profile_confidence = profile.final_category()
+        if "unknown" in {profile_category, attribute.category}:
+            return False
+
+        return (
+            profile_category != attribute.category
+            and profile_confidence >= 0.58
+            and attribute.confidence >= 0.58
+        )
+
+    @staticmethod
+    def _remember_feature_sample(
+        profile: GlobalPersonProfile,
+        feature: np.ndarray,
+        max_samples: int = 8,
+    ) -> None:
+        if feature.size == 0:
+            return
+
+        if profile.hits <= 3 or profile.hits % 12 == 0:
+            profile.feature_samples.append(feature.astype(np.float32))
+            profile.feature_samples = profile.feature_samples[-max_samples:]

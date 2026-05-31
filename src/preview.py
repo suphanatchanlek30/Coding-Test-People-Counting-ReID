@@ -6,6 +6,8 @@ from typing import Deque, Protocol
 import cv2
 import numpy as np
 
+from src.counter import CountSummary
+
 
 class DrawableObject(Protocol):
     track_id: int
@@ -39,13 +41,22 @@ class TrackingPreview:
         frame: np.ndarray,
         tracked_objects: list[DrawableObject],
         frame_id: int,
+        count_summary: CountSummary | None = None,
+        line_points: list[list[int]] | None = None,
+        zones: dict | None = None,
     ) -> np.ndarray:
         canvas = frame.copy()
+
+        if zones is not None:
+            self._draw_zones(canvas, zones)
+
+        if line_points is not None:
+            self._draw_counting_line(canvas, line_points)
 
         for obj in tracked_objects:
             self._draw_object(canvas, obj)
 
-        self._draw_overlay(canvas, frame_id, tracked_objects)
+        self._draw_overlay(canvas, frame_id, tracked_objects, count_summary)
         return canvas
 
     def show(self, frame: np.ndarray) -> bool:
@@ -102,9 +113,10 @@ class TrackingPreview:
         frame: np.ndarray,
         frame_id: int,
         tracked_objects: list[DrawableObject],
+        count_summary: CountSummary | None,
     ) -> None:
         panel_x, panel_y = 14, 14
-        panel_w, panel_h = 330, 96
+        panel_w, panel_h = 390, 148
 
         overlay = frame.copy()
         cv2.rectangle(
@@ -125,7 +137,7 @@ class TrackingPreview:
 
         cv2.putText(
             frame,
-            "TRACKING DEBUG VIEW",
+            "ZONE COUNTING DEBUG",
             (panel_x + 16, panel_y + 28),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.62,
@@ -135,22 +147,88 @@ class TrackingPreview:
         )
         cv2.putText(
             frame,
-            f"Frame: {frame_id}",
+            f"Frame: {frame_id} | Active Tracks: {len(tracked_objects)}",
             (panel_x + 16, panel_y + 56),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
+            0.48,
             (210, 210, 210),
             1,
             cv2.LINE_AA,
         )
+
+        if count_summary is not None:
+            cv2.putText(
+                frame,
+                f"Unique(track): {count_summary.total_unique_people}",
+                (panel_x + 16, panel_y + 84),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.54,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                f"Enter: {count_summary.enter_count} | Exit: {count_summary.exit_count}",
+                (panel_x + 16, panel_y + 112),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.54,
+                (0, 230, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                f"Visible: {count_summary.currently_visible_people}",
+                (panel_x + 16, panel_y + 138),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (210, 210, 210),
+                1,
+                cv2.LINE_AA,
+            )
+
+    def _draw_zones(self, frame: np.ndarray, zones: dict) -> None:
+        zone_colors = {
+            "outside": (0, 180, 255),
+            "door": (0, 80, 255),
+            "inside": (60, 210, 90),
+        }
+        overlay = frame.copy()
+
+        for zone_name, zone_cfg in zones.items():
+            polygon = np.array(zone_cfg["polygon"], dtype=np.int32)
+            color = zone_colors.get(zone_name, (180, 180, 180))
+            cv2.fillPoly(overlay, [polygon], color)
+            cv2.polylines(frame, [polygon], True, color, 3)
+
+            label_point = tuple(polygon[0])
+            cv2.putText(
+                frame,
+                zone_name.upper(),
+                (int(label_point[0]) + 8, int(label_point[1]) + 26),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        cv2.addWeighted(overlay, 0.13, frame, 0.87, 0, frame)
+
+    @staticmethod
+    def _draw_counting_line(frame: np.ndarray, line_points: list[list[int]]) -> None:
+        p1 = tuple(line_points[0])
+        p2 = tuple(line_points[1])
+        cv2.line(frame, p1, p2, (0, 0, 255), 3)
         cv2.putText(
             frame,
-            f"Active Tracks: {len(tracked_objects)}",
-            (panel_x + 16, panel_y + 80),
+            "COUNTING LINE",
+            (p1[0] + 10, p1[1] + 30),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
-            (210, 210, 210),
-            1,
+            0.75,
+            (0, 0, 255),
+            2,
             cv2.LINE_AA,
         )
 

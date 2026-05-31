@@ -1,0 +1,99 @@
+video:
+  input_path: "entrance.mov"
+  output_path: "outputs/output_video.mp4"
+  resize_width: 1280
+  process_every_n_frames: 1
+  roi_polygon: null
+
+detection:
+  model_name: "yolov8n.pt"
+  class_filter: ["person"]
+  confidence_threshold: 0.35
+  iou_threshold: 0.5
+  min_box_area: 1000
+
+tracking:
+  tracker_type: "botsort"
+  min_track_length: 5
+  min_avg_confidence: 0.35
+  max_lost_frames: 30
+
+reid:
+  enabled: true
+  method: "multi_region_appearance"
+  appearance_threshold: 0.752
+  max_time_gap_seconds: 35.0
+  max_spatial_distance: 650
+  color_weight: 0.72
+  spatial_weight: 0.13
+  temporal_weight: 0.15
+  allow_long_gap_reentry: true
+  category_consistency_bonus: 0.04
+
+counting:
+  mode: "zone"
+  line_points: [[300, 160], [300, 820]]
+  zones:
+    outside:
+      polygon: [[440, 260], [1270, 260], [1270, 840], [440, 840]]
+    door:
+      polygon: [[240, 230], [455, 230], [455, 840], [240, 840]]
+    inside:
+      polygon: [[0, 260], [260, 260], [260, 840], [0, 840]]
+  min_movement_pixels: 20
+  disappear_after_frames: 8
+  count_once_per_global_id: true
+
+attribute:
+  enabled: true
+  method: "hsv_rule"
+  blue_ratio_threshold: 0.24
+  black_ratio_threshold: 0.45
+  detect_staff_black: false
+  majority_vote: true
+
+head_verification:
+  enabled: true
+  draw_head_box: true
+  save_crops: true
+  output_dir: "outputs/head_crops"
+  contact_sheet_path: "outputs/head_contact_sheet.jpg"
+  max_crops_per_id: 6
+  min_frame_gap: 18
+  head_height_ratio: 0.24
+  head_width_shrink: 0.18
+  crop_padding: 0.18
+
+review_export:
+  enabled: true
+  output_dir: "outputs/review_crops"
+  categories: ["non_superai", "unknown"]
+  max_crops_per_id: 4
+  min_frame_gap: 24
+  crop_padding: 0.08
+
+visualization:
+  show_track_id: true
+  show_global_id: true
+  show_category: true
+  show_trajectory: true
+  show_counting_line: true
+
+export:
+  save_video: true
+  save_summary_json: true
+  save_tracks_csv: true
+  save_events_csv: true
+  save_performance_report: true
+
+preview:
+  enabled: false
+  window_name: "People Tracking Preview"
+  wait_ms: 1
+  max_trajectory_points: 30
+
+debug_video:
+  enabled: true
+  output_path: "outputs/debug_tracking_preview.mp4"
+  max_frames: null
+  fps: null

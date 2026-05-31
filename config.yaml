@@ -16,19 +16,20 @@ tracking:
   tracker_type: "botsort"
   min_track_length: 5
   min_avg_confidence: 0.35
+  min_valid_profile_duration_seconds: 4.0
   max_lost_frames: 30
 
 reid:
   enabled: true
   method: "multi_region_appearance"
-  appearance_threshold: 0.752
-  max_time_gap_seconds: 35.0
-  max_spatial_distance: 650
-  color_weight: 0.72
-  spatial_weight: 0.13
-  temporal_weight: 0.15
+  appearance_threshold: 0.75
+  max_time_gap_seconds: 34.0
+  max_spatial_distance: 620
+  color_weight: 0.68
+  spatial_weight: 0.16
+  temporal_weight: 0.16
   allow_long_gap_reentry: true
-  category_consistency_bonus: 0.04
+  category_consistency_bonus: 0.05
 
 counting:
   mode: "zone"

@@ -11,12 +11,21 @@ def live_valid_profiles(
     profiles: dict[int, GlobalPersonProfile],
     min_track_length: int,
     min_avg_confidence: float,
+    counted_ids: set[int] | None = None,
+    min_duration_seconds: float = 3.0,
 ) -> dict[int, GlobalPersonProfile]:
+    counted_ids = counted_ids or set()
     return {
         global_id: profile
         for global_id, profile in profiles.items()
         if profile.hits >= min_track_length
         and profile.avg_confidence >= min_avg_confidence
+        and _has_enough_person_evidence(
+            global_id,
+            profile,
+            counted_ids=counted_ids,
+            min_duration_seconds=min_duration_seconds,
+        )
     }
 
 
@@ -62,3 +71,27 @@ def category_counts(
     profiles: dict[int, GlobalPersonProfile],
 ) -> Counter[str]:
     return Counter(profile.final_category()[0] for profile in profiles.values())
+
+
+def _has_enough_person_evidence(
+    global_id: int,
+    profile: GlobalPersonProfile,
+    *,
+    counted_ids: set[int],
+    min_duration_seconds: float,
+) -> bool:
+    if global_id in counted_ids:
+        return True
+
+    if profile.duration_seconds >= min_duration_seconds:
+        return True
+
+    category, category_confidence = profile.final_category()
+    if (
+        category == "non_superai"
+        and category_confidence >= 0.58
+        and profile.hits >= 2
+    ):
+        return True
+
+    return False

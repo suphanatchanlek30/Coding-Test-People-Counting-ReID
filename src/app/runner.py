@@ -57,6 +57,10 @@ class PeopleAnalyticsApp:
             counting_mode=counting_cfg.get("mode", "line"),
             min_track_length=tracking_cfg["min_track_length"],
             min_avg_confidence=tracking_cfg.get("min_avg_confidence", 0.35),
+            min_valid_profile_duration_seconds=tracking_cfg.get(
+                "min_valid_profile_duration_seconds",
+                3.0,
+            ),
             disappear_after_frames=counting_cfg.get("disappear_after_frames", 8),
         )
 
@@ -227,6 +231,8 @@ class PeopleAnalyticsApp:
             profiles,
             min_track_length=runtime.min_track_length,
             min_avg_confidence=runtime.min_avg_confidence,
+            counted_ids={event.person_id for event in self.components.counter.get_events()},
+            min_duration_seconds=runtime.min_valid_profile_duration_seconds,
         )
 
         for observation in observations:
@@ -292,6 +298,8 @@ class PeopleAnalyticsApp:
             profiles,
             min_track_length=runtime.min_track_length,
             min_avg_confidence=runtime.min_avg_confidence,
+            counted_ids={event.person_id for event in c.counter.get_events()},
+            min_duration_seconds=runtime.min_valid_profile_duration_seconds,
         )
         valid_events = filter_events_for_profiles(c.counter.get_events(), valid_profiles)
 
@@ -489,6 +497,7 @@ class _RuntimeState:
         counting_mode: str,
         min_track_length: int,
         min_avg_confidence: float,
+        min_valid_profile_duration_seconds: float,
         disappear_after_frames: int,
     ) -> None:
         self.output_video_path = output_video_path
@@ -498,6 +507,7 @@ class _RuntimeState:
         self.counting_mode = counting_mode
         self.min_track_length = min_track_length
         self.min_avg_confidence = min_avg_confidence
+        self.min_valid_profile_duration_seconds = min_valid_profile_duration_seconds
         self.disappear_after_frames = disappear_after_frames
 
         self.processed_frames = 0

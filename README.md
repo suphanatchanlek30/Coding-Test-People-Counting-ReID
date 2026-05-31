@@ -52,3 +52,33 @@ people-counting-reid/
 ├── outputs/
 └── assets/
 ```
+
+- YAML config loading
+- required config validation
+- video metadata reader
+- optional frame resizing
+- process every N frames support
+
+Run:
+
+```bash
+python main.py
+```
+
+Expected output:
+
+```txt
+Smart Entrance People Analytics
+Step 2: video reader and config loader completed.
+
+Config: config.yaml
+Processing video: entrance.mov
+FPS: ...
+Original size: ...
+Total frames: ...
+
+First processed frame:
+Frame ID: 0
+Timestamp: 0.00s
+Processed size: ...
+```

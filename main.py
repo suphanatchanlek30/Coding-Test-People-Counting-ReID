@@ -9,7 +9,9 @@ from tqdm import tqdm
 from src.config.settings import load_settings
 from src.counter import CountSummary, LineCrossingCounter, ZoneSequenceCounter
 from src.debug_video_writer import DebugVideoWriter
+from src.io.artifacts import ResultExporter
 from src.io.video import VideoReader
+from src.metrics import PerformanceMeter
 from src.utils import ensure_dir
 from src.vision.attributes import HSVAttributeClassifier
 from src.vision.identity import GlobalIDManager, GlobalPersonProfile
@@ -90,6 +92,7 @@ def main() -> None:
     reid_cfg = config["reid"]
     counting_cfg = config["counting"]
     attribute_cfg = config["attribute"]
+    export_cfg = config["export"]
     debug_video_cfg = config.get("debug_video", {})
 
     reader = VideoReader(
@@ -125,11 +128,13 @@ def main() -> None:
     renderer = TrackingPreview(
         max_trajectory_points=config.get("preview", {}).get("max_trajectory_points", 30),
     )
+    exporter = ResultExporter("outputs")
+    meter = PerformanceMeter()
 
     info = reader.info()
-    output_video_path = debug_video_cfg.get(
+    output_video_path = video_cfg.get(
         "output_path",
-        "outputs/debug_tracking_preview.mp4",
+        debug_video_cfg.get("output_path", "outputs/debug_tracking_preview.mp4"),
     )
     counting_mode = counting_cfg.get("mode", "line")
     disappear_after_frames = counting_cfg.get("disappear_after_frames", 8)
@@ -153,7 +158,6 @@ def main() -> None:
     total_active_tracks_seen = 0
     max_tracks_in_frame = 0
     last_count_summary = CountSummary()
-    last_category_counts = Counter()
 
     try:
         total = args.max_frames or info.total_frames
@@ -162,91 +166,97 @@ def main() -> None:
             if args.max_frames is not None and processed_frames >= args.max_frames:
                 break
 
-            tracked_objects = tracker.update(
-                frame=video_frame.frame,
-                frame_id=video_frame.frame_id,
-                timestamp=video_frame.timestamp,
-            )
+            with meter.timer("total_frame"):
+                with meter.timer("tracking"):
+                    tracked_objects = tracker.update(
+                        frame=video_frame.frame,
+                        frame_id=video_frame.frame_id,
+                        timestamp=video_frame.timestamp,
+                    )
 
-            observations = []
-            active_global_ids: set[int] = set()
+                observations = []
+                active_global_ids: set[int] = set()
 
-            for tracked_object in tracked_objects:
-                attribute = attribute_classifier.classify(
-                    video_frame.frame,
-                    tracked_object.bbox,
+                with meter.timer("reid_attribute"):
+                    for tracked_object in tracked_objects:
+                        attribute = attribute_classifier.classify(
+                            video_frame.frame,
+                            tracked_object.bbox,
+                        )
+                        observation = global_id_manager.update(
+                            frame=video_frame.frame,
+                            tracked_object=tracked_object,
+                            attribute=attribute,
+                            active_global_ids=active_global_ids,
+                        )
+                        observations.append(observation)
+                        active_global_ids.add(observation.global_id)
+
+                with meter.timer("counting"):
+                    counter.update(
+                        observations,
+                        frame_id=video_frame.frame_id,
+                        timestamp=video_frame.timestamp,
+                        max_missing_frames=disappear_after_frames,
+                    )
+
+                current_profiles = valid_profiles(
+                    global_id_manager.get_profiles(),
+                    min_track_length=min_track_length,
+                    min_avg_confidence=min_avg_confidence,
                 )
-                observation = global_id_manager.update(
-                    frame=video_frame.frame,
-                    tracked_object=tracked_object,
-                    attribute=attribute,
+
+                for observation in observations:
+                    profile = current_profiles.get(observation.global_id)
+                    if profile is not None:
+                        category, category_confidence = profile.final_category()
+                        observation.category = category
+                        observation.category_confidence = category_confidence
+
+                last_count_summary = build_live_summary(
+                    profiles=current_profiles,
                     active_global_ids=active_global_ids,
+                    events=counter.get_events(),
                 )
-                observations.append(observation)
-                active_global_ids.add(observation.global_id)
+                category_counts = profile_category_counts(current_profiles)
 
-            counter.update(
-                observations,
-                frame_id=video_frame.frame_id,
-                timestamp=video_frame.timestamp,
-                max_missing_frames=disappear_after_frames,
-            )
+                with meter.timer("visualization"):
+                    annotated_frame = renderer.draw(
+                        frame=video_frame.frame,
+                        tracked_objects=observations,
+                        frame_id=video_frame.frame_id,
+                        count_summary=last_count_summary,
+                        category_counts=dict(category_counts),
+                        line_points=(
+                            counting_cfg["line_points"]
+                            if counting_mode == "line"
+                            else None
+                        ),
+                        zones=counting_cfg.get("zones")
+                        if counting_mode == "zone"
+                        else None,
+                    )
 
-            current_profiles = valid_profiles(
-                global_id_manager.get_profiles(),
-                min_track_length=min_track_length,
-                min_avg_confidence=min_avg_confidence,
-            )
+                if writer is None:
+                    frame_h, frame_w = annotated_frame.shape[:2]
+                    writer = DebugVideoWriter(
+                        output_path=output_video_path,
+                        fps=float(debug_video_cfg.get("fps") or info.fps),
+                        frame_size=(frame_w, frame_h),
+                    )
 
-            for observation in observations:
-                profile = current_profiles.get(observation.global_id)
-                if profile is not None:
-                    category, category_confidence = profile.final_category()
-                    observation.category = category
-                    observation.category_confidence = category_confidence
+                writer.write(annotated_frame)
 
-            last_count_summary = build_live_summary(
-                profiles=current_profiles,
-                active_global_ids=active_global_ids,
-                events=counter.get_events(),
-            )
-            last_category_counts = profile_category_counts(current_profiles)
+                if args.show:
+                    if not renderer.show(annotated_frame):
+                        print("Preview stopped by user.")
+                        break
 
-            annotated_frame = renderer.draw(
-                frame=video_frame.frame,
-                tracked_objects=observations,
-                frame_id=video_frame.frame_id,
-                count_summary=last_count_summary,
-                category_counts=dict(last_category_counts),
-                line_points=(
-                    counting_cfg["line_points"]
-                    if counting_mode == "line"
-                    else None
-                ),
-                zones=counting_cfg.get("zones")
-                if counting_mode == "zone"
-                else None,
-            )
-
-            if writer is None:
-                frame_h, frame_w = annotated_frame.shape[:2]
-                writer = DebugVideoWriter(
-                    output_path=output_video_path,
-                    fps=float(debug_video_cfg.get("fps") or info.fps),
-                    frame_size=(frame_w, frame_h),
-                )
-
-            writer.write(annotated_frame)
-
-            if args.show:
-                if not renderer.show(annotated_frame):
-                    print("Preview stopped by user.")
-                    break
-
-            active_count = len(observations)
-            processed_frames += 1
-            total_active_tracks_seen += active_count
-            max_tracks_in_frame = max(max_tracks_in_frame, active_count)
+                active_count = len(observations)
+                processed_frames += 1
+                total_active_tracks_seen += active_count
+                max_tracks_in_frame = max(max_tracks_in_frame, active_count)
+                meter.mark_frame()
 
     finally:
         reader.release()
@@ -271,11 +281,37 @@ def main() -> None:
         for event in counter.get_events()
         if event.person_id in confirmed_profiles
     ]
+    counted_ids = {event.person_id for event in events}
 
+    final_summary = CountSummary(
+        total_unique_people=len(confirmed_profiles),
+        enter_count=sum(1 for event in events if event.event_type == "enter"),
+        exit_count=sum(1 for event in events if event.event_type == "exit"),
+        currently_visible_people=last_count_summary.currently_visible_people,
+    )
     final_category_counts = profile_category_counts(confirmed_profiles)
+    performance = meter.report()
 
-    enter_count = sum(1 for event in events if event.event_type == "enter")
-    exit_count = sum(1 for event in events if event.event_type == "exit")
+    if export_cfg.get("save_summary_json", True):
+        exporter.save_summary(
+            path="outputs/summary.json",
+            video_path=video_cfg["input_path"],
+            method="YOLO + BoT-SORT + Appearance ReID + Door-Zone Counting + HSV Attributes",
+            count_summary=final_summary,
+            profiles=confirmed_profiles,
+            performance=performance,
+            total_frames=info.total_frames,
+            processed_frames=processed_frames,
+        )
+
+    if export_cfg.get("save_tracks_csv", True):
+        exporter.save_tracks("outputs/tracks.csv", confirmed_profiles, counted_ids)
+
+    if export_cfg.get("save_events_csv", True):
+        exporter.save_events("outputs/events.csv", events, confirmed_profiles)
+
+    if export_cfg.get("save_performance_report", True):
+        exporter.save_performance("outputs/performance_report.json", performance)
 
     track_states = tracker.get_track_states()
     valid_tracks = {
@@ -289,7 +325,7 @@ def main() -> None:
     )
 
     print()
-    print("Identity-aware people analytics completed.")
+    print("People analytics completed.")
     print(f"Processed frames: {processed_frames}")
     print(f"Raw track IDs found: {len(track_states)}")
     print(f"Valid track IDs with length >= {min_track_length}: {len(valid_tracks)}")
@@ -300,16 +336,26 @@ def main() -> None:
 
     print()
     print("Final Result:")
-    print(f"* Total Unique People: {len(confirmed_profiles)}")
-    print(f"* Enter Count: {enter_count}")
-    print(f"* Exit Count: {exit_count}")
+    print(f"* Total Unique People: {final_summary.total_unique_people}")
+    print(f"* Enter Count: {final_summary.enter_count}")
+    print(f"* Exit Count: {final_summary.exit_count}")
     print(f"* SuperAI People: {final_category_counts.get('superai_shirt', 0)}")
     print(f"* Non-SuperAI People: {final_category_counts.get('non_superai', 0)}")
     print(f"* Unknown: {final_category_counts.get('unknown', 0)}")
 
     print()
+    print("Performance:")
+    print(f"* Average FPS: {performance.get('avg_fps', 0.0):.2f}")
+    print(f"* Average Latency: {performance.get('avg_total_time_ms', 0.0):.2f} ms")
+    print(f"* P95 Latency: {performance.get('p95_latency_ms', 0.0):.2f} ms")
+
+    print()
     print("Saved:")
     print(f"* {Path(output_video_path)}")
+    print("* outputs/summary.json")
+    print("* outputs/tracks.csv")
+    print("* outputs/events.csv")
+    print("* outputs/performance_report.json")
 
 
 if __name__ == "__main__":

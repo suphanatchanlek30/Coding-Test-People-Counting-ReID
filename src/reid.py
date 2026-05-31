@@ -28,10 +28,10 @@ class ColorHistogramReID:
     ) -> np.ndarray:
         regions = self._extract_regions(frame, bbox)
         region_weights = {
-            "torso": 0.34,
-            "pants": 0.26,
-            "shoes": 0.18,
-            "head_hair": 0.10,
+            "torso": 0.26,
+            "pants": 0.28,
+            "shoes": 0.20,
+            "head_hair": 0.14,
             "full_body": 0.06,
         }
 
@@ -48,7 +48,7 @@ class ColorHistogramReID:
 
         # Shape is deliberately weak: it helps reject impossible matches without
         # turning body size into the main identity signal.
-        parts.append(self._shape_descriptor(frame.shape, bbox) * 0.06)
+        parts.append(self._shape_descriptor(frame.shape, bbox) * 0.10)
 
         feature = np.concatenate(parts).astype(np.float32)
         norm = np.linalg.norm(feature)

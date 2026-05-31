@@ -730,3 +730,277 @@ Global ID นี้เป็นคนเดียวกันจริงไห�
 unknown เกิดจากอะไร?
 event เข้า/ออกมาจากคนคนไหน?
 ```
+
+## Code Architecture
+
+โค้ดถูกจัดเป็น layer เพื่อให้แยกหน้าที่ชัดเจน อ่านง่าย และต่อยอดได้เหมือนโปรเจกต์จริง ไม่ได้รวมทุกอย่างไว้ใน `main.py`
+
+ภาพรวม flow:
+
+```txt
+main.py
+  -> load config
+  -> setup logger
+  -> start PeopleAnalyticsApp
+
+PeopleAnalyticsApp
+  -> read video frame
+  -> run tracker
+  -> run attribute classifier
+  -> assign Global ID
+  -> update counter
+  -> render annotated frame
+  -> write video
+  -> export JSON / CSV / performance report
+```
+
+### Folder Responsibility
+
+```txt
+src/
+├── app/
+│   ├── runner.py
+│   ├── factories.py
+│   └── summaries.py
+├── config/
+│   └── settings.py
+├── domain/
+│   └── __init__.py
+├── io/
+│   ├── artifacts.py
+│   └── video.py
+├── observability/
+│   └── logging.py
+├── vision/
+│   ├── attributes.py
+│   ├── identity.py
+│   ├── reid.py
+│   └── tracking.py
+├── visualization/
+│   └── renderer.py
+├── counter.py
+├── global_id_manager.py
+├── tracker.py
+├── reid.py
+├── attribute_classifier.py
+├── exporter.py
+├── metrics.py
+├── preview.py
+├── video_reader.py
+└── utils.py
+```
+
+### `main.py`
+
+`main.py` เป็น entrypoint เท่านั้น มีหน้าที่:
+
+- parse argument เช่น `--config`
+- setup logging
+- load config
+- start application runner
+
+เหตุผลคือไม่ควรให้ `main.py` มี logic ของ Computer Vision เยอะเกินไป เพราะจะ maintain ยาก
+
+### `src/app/runner.py`
+
+เป็น orchestration หลักของระบบ
+
+หน้าที่:
+
+- เปิดวิดีโอ
+- loop ทีละ frame
+- เรียก tracker
+- เรียก attribute classifier
+- เรียก Global ID manager
+- update counter
+- render video
+- export result ตอนจบ
+
+ไฟล์นี้ควบคุมลำดับการทำงานของ pipeline แต่ไม่ได้เก็บรายละเอียด algorithm ลึก ๆ ไว้เอง
+
+### `src/app/factories.py`
+
+ใช้สร้าง component จาก `config.yaml`
+
+เช่น:
+
+- tracker
+- ReID model
+- Global ID manager
+- counter
+- renderer
+- exporter
+- review crop exporter
+
+ข้อดีคือถ้าจะเปลี่ยน tracker หรือ parameter ไม่ต้องไปแก้หลายที่
+
+### `src/app/summaries.py`
+
+รวม logic สำหรับสร้าง summary ระหว่างรันและหลังรัน
+
+เช่น:
+
+- filter Global ID ที่ valid
+- filter event เฉพาะคนที่ผ่านเงื่อนไข
+- สร้าง live count
+- สร้าง final count
+- นับ category summary
+
+แยกไฟล์นี้ออกมาเพราะ summary logic เป็น business logic ไม่ควรปนกับ drawing หรือ tracking
+
+### `src/config/settings.py`
+
+โหลดและ validate config
+
+หน้าที่:
+
+- อ่าน `config.yaml`
+- ตรวจว่ามี section สำคัญครบ
+- ส่ง config ให้ application ใช้งาน
+
+ตัวอย่าง section ที่ต้องมี:
+
+```txt
+video
+detection
+tracking
+reid
+counting
+attribute
+export
+```
+
+### `src/vision/`
+
+เป็น public interface ของฝั่ง Computer Vision
+
+```txt
+src/vision/tracking.py
+src/vision/reid.py
+src/vision/identity.py
+src/vision/attributes.py
+```
+
+หน้าที่:
+
+- `tracking.py`: YOLO + BoT-SORT tracking
+- `reid.py`: appearance feature extraction
+- `identity.py`: Global ID manager
+- `attributes.py`: SuperAI / Non-SuperAI / Unknown classifier
+
+โฟลเดอร์นี้ทำให้ reviewer เห็นชัดว่าส่วน Computer Vision อยู่ตรงไหน
+
+### `src/counter.py`
+
+เก็บ logic การนับทั้งหมด
+
+รองรับ:
+
+- line crossing
+- zone sequence
+- outside / door / inside
+- lost-at-door event
+- enter / exit event
+- unique people state
+
+เหตุผลที่แยกออกมา เพราะ counting logic เป็นหัวใจของโจทย์ และควรอ่านแยกจาก YOLO/visualization ได้
+
+### `src/visualization/`
+
+ใช้วาด annotated video
+
+แสดง:
+
+- bounding box
+- Global ID
+- Track ID
+- category
+- trajectory
+- zone polygon
+- count dashboard
+- SuperAI / Non-SuperAI / Unknown summary
+
+ส่วนนี้แยกออกจาก logic นับคน เพื่อไม่ให้ visualization ไปปนกับ decision logic
+
+### `src/io/`
+
+รวม input/output adapters
+
+หน้าที่:
+
+- video reader
+- video writer
+- result exporter
+- head crop exporter
+- review crop exporter
+
+แยกไว้เพราะ I/O เป็นเรื่องของไฟล์ ไม่ใช่ algorithm
+
+### `src/observability/`
+
+ดูแล logging และ runtime visibility
+
+ระบบ log ไปที่:
+
+```txt
+outputs/logs/run.log
+```
+
+Log ใช้ดู:
+
+- video metadata
+- model config
+- final count
+- performance
+- output paths
+
+### `src/domain/`
+
+รวม domain object ที่ใช้ข้าม module เช่น:
+
+- `CountSummary`
+- `CountEvent`
+- `GlobalObservation`
+- `GlobalPersonProfile`
+
+ช่วยให้ module อื่น import object สำคัญได้จากจุดเดียว
+
+## Why This Architecture
+
+เหตุผลที่แยกแบบนี้:
+
+- `main.py` สั้นและเข้าใจง่าย
+- Computer Vision logic แยกจาก application flow
+- Counting logic อ่านแยกได้
+- Visualization ไม่ปนกับ decision logic
+- Export และ logging แยกเป็น infrastructure
+- สามารถเปลี่ยน tracker, ReID, classifier หรือ counter ได้ง่าย
+- เหมาะกับการอธิบายใน interview เพราะแสดง system design ชัดเจน
+
+## Runtime Sequence
+
+```txt
+1. main.py loads config
+2. PeopleAnalyticsApp starts
+3. VideoReader reads frame
+4. MultiObjectTracker detects and tracks people
+5. HSVAttributeClassifier predicts frame-level category
+6. GlobalIDManager assigns Global ID
+7. ZoneSequenceCounter updates enter/exit state
+8. TrackingPreview renders annotated frame
+9. DebugVideoWriter writes video
+10. ResultExporter saves JSON/CSV
+11. PerformanceMeter saves runtime report
+```
+
+## Design Principle
+
+ระบบนี้ตั้งใจแยก `what to decide` ออกจาก `how to display`
+
+ตัวอย่าง:
+
+- การตัดสินว่าเป็นคนเดิมหรือไม่ อยู่ใน `GlobalIDManager`
+- การตัดสินว่าเข้า/ออก อยู่ใน `counter.py`
+- การตัดสินว่าเป็น SuperAI หรือไม่ อยู่ใน `attribute_classifier.py`
+- การวาดผล อยู่ใน `preview.py`
+- การ export ผล อยู่ใน `exporter.py`

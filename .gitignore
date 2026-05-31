@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Model weights
+*.pt
+*.onnx
+*.engine
+
+# Input videos
+*.mov
+*.mp4
+*.avi
+*.mkv
+
+# Generated outputs
+outputs/*
+!outputs/.gitkeep
+
+# Keep assets placeholder
+!assets/.gitkeep

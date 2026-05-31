@@ -34,7 +34,7 @@ def _validate_required_sections(config: dict[str, Any]) -> None:
         "attribute",
         "export",
     ]
-    missing = [section for section in required_sections if section not in config]
 
+    missing = [section for section in required_sections if section not in config]
     if missing:
         raise KeyError(f"Missing required config section(s): {', '.join(missing)}")

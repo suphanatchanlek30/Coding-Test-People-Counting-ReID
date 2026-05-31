@@ -13,6 +13,8 @@ class DrawableObject(Protocol):
     track_id: int
     bbox: tuple[float, float, float, float]
     confidence: float
+    category: str
+    category_confidence: float
 
     @property
     def center(self) -> tuple[float, float]:
@@ -42,6 +44,7 @@ class TrackingPreview:
         tracked_objects: list[DrawableObject],
         frame_id: int,
         count_summary: CountSummary | None = None,
+        category_counts: dict[str, int] | None = None,
         line_points: list[list[int]] | None = None,
         zones: dict | None = None,
     ) -> np.ndarray:
@@ -56,7 +59,14 @@ class TrackingPreview:
         for obj in tracked_objects:
             self._draw_object(canvas, obj)
 
-        self._draw_overlay(canvas, frame_id, tracked_objects, count_summary)
+        self._draw_overlay(
+            canvas,
+            frame_id,
+            tracked_objects,
+            count_summary,
+            category_counts or {},
+        )
+        self._draw_legend(canvas)
         return canvas
 
     def show(self, frame: np.ndarray) -> bool:
@@ -70,7 +80,9 @@ class TrackingPreview:
     def _draw_object(self, frame: np.ndarray, obj: DrawableObject) -> None:
         x1, y1, x2, y2 = [int(v) for v in obj.bbox]
         global_id = int(getattr(obj, "global_id", obj.track_id))
-        color = self._color_for_id(global_id)
+        category = getattr(obj, "category", "unknown")
+        category_conf = float(getattr(obj, "category_confidence", 0.0))
+        color = self._color_for_category(category, global_id)
 
         foot_point = (int(obj.foot_point[0]), int(obj.foot_point[1]))
         self.trajectories[global_id].append(foot_point)
@@ -81,30 +93,44 @@ class TrackingPreview:
         cv2.circle(frame, foot_point, 4, color, -1)
         cv2.circle(frame, foot_point, 7, (8, 8, 8), 2)
 
-        label = f"G{global_id} T{obj.track_id} | det {obj.confidence:.2f}"
-        self._draw_label(frame, (x1, max(4, y1 - 26)), label, color)
+        label = f"G{global_id} T{obj.track_id}"
+        sub_label = f"{category.replace('_', ' ')} {category_conf:.2f}"
+        self._draw_label(frame, (x1, max(4, y1 - 48)), label, sub_label, color)
 
     def _draw_label(
         self,
         frame: np.ndarray,
         origin: tuple[int, int],
-        text: str,
+        title: str,
+        subtitle: str,
         color: tuple[int, int, int],
     ) -> None:
         x, y = origin
-        w, h = 210, 24
-        overlay = frame.copy()
+        w, h = 168, 40
+        y = max(4, y)
 
+        overlay = frame.copy()
         cv2.rectangle(overlay, (x, y), (x + w, y + h), (12, 12, 12), -1)
         cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
         cv2.rectangle(frame, (x, y), (x + 5, y + h), color, -1)
+
         cv2.putText(
             frame,
-            text,
-            (x + 10, y + 17),
+            title,
+            (x + 12, y + 18),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
+            0.50,
             (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            subtitle,
+            (x + 12, y + 34),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.40,
+            (190, 190, 190),
             1,
             cv2.LINE_AA,
         )
@@ -115,9 +141,10 @@ class TrackingPreview:
         frame_id: int,
         tracked_objects: list[DrawableObject],
         count_summary: CountSummary | None,
+        category_counts: dict[str, int],
     ) -> None:
         panel_x, panel_y = 14, 14
-        panel_w, panel_h = 420, 148
+        panel_w, panel_h = 540, 224
 
         overlay = frame.copy()
         cv2.rectangle(
@@ -138,56 +165,73 @@ class TrackingPreview:
 
         cv2.putText(
             frame,
-            "IDENTITY STITCHING DEBUG",
+            "LIVE ENTRANCE ANALYTICS",
             (panel_x + 16, panel_y + 28),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
+            0.68,
             (255, 255, 255),
             2,
             cv2.LINE_AA,
         )
         cv2.putText(
             frame,
-            f"Frame: {frame_id} | Visible: {len(tracked_objects)}",
+            f"Frame {frame_id} | Visible {len(tracked_objects)}",
             (panel_x + 16, panel_y + 56),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.48,
-            (210, 210, 210),
+            (205, 205, 205),
             1,
             cv2.LINE_AA,
         )
 
         if count_summary is not None:
+            self._draw_metric_card(frame, panel_x + 16, panel_y + 72, "Realtime Unique", str(count_summary.total_unique_people), (255, 255, 255))
+            self._draw_metric_card(frame, panel_x + 188, panel_y + 72, "Enter", str(count_summary.enter_count), (60, 255, 120))
+            self._draw_metric_card(frame, panel_x + 360, panel_y + 72, "Exit", str(count_summary.exit_count), (0, 170, 255))
+            self._draw_metric_card(frame, panel_x + 16, panel_y + 124, "Visible", str(count_summary.currently_visible_people), (210, 210, 210))
+
+        self._draw_metric_card(frame, panel_x + 188, panel_y + 124, "SuperAI", str(category_counts.get("superai_shirt", 0)), self._category_colors()["superai_shirt"])
+        self._draw_metric_card(frame, panel_x + 360, panel_y + 124, "Non-SuperAI", str(category_counts.get("non_superai", 0)), self._category_colors()["non_superai"])
+        self._draw_metric_card(frame, panel_x + 16, panel_y + 176, "Unknown", str(category_counts.get("unknown", 0)), self._category_colors()["unknown"])
+
+    @staticmethod
+    def _draw_metric_card(
+        frame: np.ndarray,
+        x: int,
+        y: int,
+        label: str,
+        value: str,
+        color: tuple[int, int, int],
+    ) -> None:
+        cv2.rectangle(frame, (x, y), (x + 174, y + 42), (28, 28, 28), -1)
+        cv2.rectangle(frame, (x, y), (x + 174, y + 42), (70, 70, 70), 1)
+        cv2.putText(frame, label, (x + 10, y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(frame, value, (x + 10, y + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.72, color, 2, cv2.LINE_AA)
+
+    def _draw_legend(self, frame: np.ndarray) -> None:
+        items = [
+            ("SuperAI", self._category_colors()["superai_shirt"]),
+            ("Visitor", self._category_colors()["non_superai"]),
+            ("Unknown", self._category_colors()["unknown"]),
+        ]
+        x = frame.shape[1] - 210
+        y = 18
+
+        cv2.rectangle(frame, (x - 12, y - 8), (frame.shape[1] - 12, y + 86), (12, 12, 12), -1)
+
+        for label, color in items:
+            cv2.rectangle(frame, (x, y), (x + 18, y + 18), color, -1)
             cv2.putText(
                 frame,
-                f"Unique(global): {count_summary.total_unique_people}",
-                (panel_x + 16, panel_y + 84),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.54,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                f"Enter: {count_summary.enter_count} | Exit: {count_summary.exit_count}",
-                (panel_x + 16, panel_y + 112),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.54,
-                (0, 230, 255),
-                1,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                f"Currently Visible: {count_summary.currently_visible_people}",
-                (panel_x + 16, panel_y + 138),
+                label,
+                (x + 28, y + 15),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
-                (210, 210, 210),
+                (235, 235, 235),
                 1,
                 cv2.LINE_AA,
             )
+            y += 26
 
     def _draw_zones(self, frame: np.ndarray, zones: dict) -> None:
         zone_colors = {
@@ -222,16 +266,6 @@ class TrackingPreview:
         p1 = tuple(line_points[0])
         p2 = tuple(line_points[1])
         cv2.line(frame, p1, p2, (0, 0, 255), 3)
-        cv2.putText(
-            frame,
-            "COUNTING LINE",
-            (p1[0] + 10, p1[1] + 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (0, 0, 255),
-            2,
-            cv2.LINE_AA,
-        )
 
     def _draw_trajectory(
         self,
@@ -248,8 +282,21 @@ class TrackingPreview:
             cv2.line(frame, points[i - 1], points[i], color, thickness)
 
     @staticmethod
-    def _color_for_id(person_id: int) -> tuple[int, int, int]:
-        colors = [
+    def _category_colors() -> dict[str, tuple[int, int, int]]:
+        return {
+            "superai_shirt": (255, 120, 20),
+            "non_superai": (0, 220, 255),
+            "staff_black": (245, 245, 245),
+            "unknown": (150, 150, 150),
+        }
+
+    @staticmethod
+    def _color_for_category(category: str, fallback_id: int) -> tuple[int, int, int]:
+        colors = TrackingPreview._category_colors()
+        if category in colors:
+            return colors[category]
+
+        fallback_colors = [
             (255, 80, 80),
             (80, 255, 80),
             (80, 180, 255),
@@ -257,4 +304,4 @@ class TrackingPreview:
             (220, 80, 255),
             (80, 255, 255),
         ]
-        return colors[person_id % len(colors)]
+        return fallback_colors[fallback_id % len(fallback_colors)]

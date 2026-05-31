@@ -69,18 +69,19 @@ class TrackingPreview:
 
     def _draw_object(self, frame: np.ndarray, obj: DrawableObject) -> None:
         x1, y1, x2, y2 = [int(v) for v in obj.bbox]
-        color = self._color_for_id(obj.track_id)
+        global_id = int(getattr(obj, "global_id", obj.track_id))
+        color = self._color_for_id(global_id)
 
         foot_point = (int(obj.foot_point[0]), int(obj.foot_point[1]))
-        self.trajectories[obj.track_id].append(foot_point)
+        self.trajectories[global_id].append(foot_point)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        self._draw_trajectory(frame, obj.track_id, color)
+        self._draw_trajectory(frame, global_id, color)
 
         cv2.circle(frame, foot_point, 4, color, -1)
         cv2.circle(frame, foot_point, 7, (8, 8, 8), 2)
 
-        label = f"T{obj.track_id} | det {obj.confidence:.2f}"
+        label = f"G{global_id} T{obj.track_id} | det {obj.confidence:.2f}"
         self._draw_label(frame, (x1, max(4, y1 - 26)), label, color)
 
     def _draw_label(
@@ -91,7 +92,7 @@ class TrackingPreview:
         color: tuple[int, int, int],
     ) -> None:
         x, y = origin
-        w, h = 150, 24
+        w, h = 210, 24
         overlay = frame.copy()
 
         cv2.rectangle(overlay, (x, y), (x + w, y + h), (12, 12, 12), -1)
@@ -102,7 +103,7 @@ class TrackingPreview:
             text,
             (x + 10, y + 17),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.45,
             (255, 255, 255),
             1,
             cv2.LINE_AA,
@@ -116,7 +117,7 @@ class TrackingPreview:
         count_summary: CountSummary | None,
     ) -> None:
         panel_x, panel_y = 14, 14
-        panel_w, panel_h = 390, 148
+        panel_w, panel_h = 420, 148
 
         overlay = frame.copy()
         cv2.rectangle(
@@ -137,7 +138,7 @@ class TrackingPreview:
 
         cv2.putText(
             frame,
-            "ZONE COUNTING DEBUG",
+            "IDENTITY STITCHING DEBUG",
             (panel_x + 16, panel_y + 28),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.62,
@@ -147,7 +148,7 @@ class TrackingPreview:
         )
         cv2.putText(
             frame,
-            f"Frame: {frame_id} | Active Tracks: {len(tracked_objects)}",
+            f"Frame: {frame_id} | Visible: {len(tracked_objects)}",
             (panel_x + 16, panel_y + 56),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.48,
@@ -159,7 +160,7 @@ class TrackingPreview:
         if count_summary is not None:
             cv2.putText(
                 frame,
-                f"Unique(track): {count_summary.total_unique_people}",
+                f"Unique(global): {count_summary.total_unique_people}",
                 (panel_x + 16, panel_y + 84),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.54,
@@ -179,7 +180,7 @@ class TrackingPreview:
             )
             cv2.putText(
                 frame,
-                f"Visible: {count_summary.currently_visible_people}",
+                f"Currently Visible: {count_summary.currently_visible_people}",
                 (panel_x + 16, panel_y + 138),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
@@ -235,10 +236,10 @@ class TrackingPreview:
     def _draw_trajectory(
         self,
         frame: np.ndarray,
-        track_id: int,
+        global_id: int,
         color: tuple[int, int, int],
     ) -> None:
-        points = list(self.trajectories[track_id])
+        points = list(self.trajectories[global_id])
         if len(points) < 2:
             return
 
@@ -247,7 +248,7 @@ class TrackingPreview:
             cv2.line(frame, points[i - 1], points[i], color, thickness)
 
     @staticmethod
-    def _color_for_id(track_id: int) -> tuple[int, int, int]:
+    def _color_for_id(person_id: int) -> tuple[int, int, int]:
         colors = [
             (255, 80, 80),
             (80, 255, 80),
@@ -256,4 +257,4 @@ class TrackingPreview:
             (220, 80, 255),
             (80, 255, 255),
         ]
-        return colors[track_id % len(colors)]
+        return colors[person_id % len(colors)]

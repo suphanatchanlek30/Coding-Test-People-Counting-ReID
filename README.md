@@ -445,3 +445,288 @@ Unknown
 - ถ้าเสื้อถูกบังมาก ระบบอาจให้ `unknown`
 - ถ้าคนไม่ได้ใส่เสื้อ SuperAI แต่มีป้ายหรือสายคล้อง ระบบอาจต้องใช้ review crop หรือ classifier ที่ train เพิ่ม
 - ถ้าเสื้อสีคล้าย SuperAI อาจเกิด false positive ได้
+
+## Result Export
+
+ระบบไม่ได้แสดงผลเฉพาะบนวิดีโอเท่านั้น แต่ export ผลลัพธ์ออกมาเป็นไฟล์เพื่อให้ตรวจสอบย้อนหลัง วิเคราะห์ต่อ และใช้ประกอบการอธิบายในรอบสัมภาษณ์ได้
+
+Output files:
+
+```txt
+outputs/output_video.mp4
+outputs/summary.json
+outputs/tracks.csv
+outputs/events.csv
+outputs/performance_report.json
+```
+
+### 1. Annotated Video
+
+```txt
+outputs/output_video.mp4
+```
+
+วิดีโอผลลัพธ์ที่วาดข้อมูลสำคัญลงบนเฟรม เช่น:
+
+- bounding box รอบคน
+- `G` = Global ID
+- `T` = Tracker ID
+- category เช่น `superai_shirt`, `non_superai`, `unknown`
+- trajectory
+- outside / door / inside zone
+- realtime unique count
+- enter / exit count
+- จำนวน SuperAI / Non-SuperAI / Unknown
+
+ไฟล์นี้ใช้สำหรับดูผลลัพธ์แบบ visual และใช้เป็นวิดีโอประกอบการส่งงาน
+
+### 2. Summary JSON
+
+```txt
+outputs/summary.json
+```
+
+ไฟล์สรุปผลรวมของระบบ เช่น:
+
+```json
+{
+  "video": "entrance.mov",
+  "method": "YOLO + BoT-SORT + Appearance ReID + Door-Zone Counting + HSV Attributes",
+  "total_unique_people": 72,
+  "enter_count": 18,
+  "exit_count": 51,
+  "superai_people": 60,
+  "non_superai_people": 11,
+  "unknown_people": 1,
+  "average_fps": 4.58,
+  "total_frames": 2556,
+  "processed_frames": 2548
+}
+```
+
+ไฟล์นี้ใช้สำหรับตอบคำถามหลักของโจทย์ว่า “นับได้กี่คน” และสรุป performance เบื้องต้น
+
+### 3. Tracks CSV
+
+```txt
+outputs/tracks.csv
+```
+
+ไฟล์นี้เก็บข้อมูลรายคนในระดับ `Global ID`
+
+ตัวอย่าง columns:
+
+```txt
+global_id,
+track_ids,
+category,
+first_seen,
+last_seen,
+first_frame,
+last_frame,
+counted,
+direction,
+avg_confidence,
+category_confidence
+```
+
+ความสำคัญของไฟล์นี้คือช่วยตรวจว่า ReID รวม track หลายตัวเป็นคนเดียวกันได้หรือไม่ เช่น:
+
+```txt
+global_id = 12
+track_ids = 3|8|15
+```
+
+แปลว่า tracker เคยให้ ID 3, 8 และ 15 แต่ระบบมองว่าเป็นคนเดียวกันในระดับ Global ID
+
+### 4. Events CSV
+
+```txt
+outputs/events.csv
+```
+
+ไฟล์นี้เก็บเหตุการณ์เข้า/ออกที่ระบบตรวจพบ
+
+ตัวอย่าง columns:
+
+```txt
+event_id,
+global_id,
+event_type,
+category,
+timestamp,
+frame_id,
+line_crossed,
+confidence,
+category_confidence
+```
+
+ตัวอย่าง event:
+
+```txt
+event_id = 5
+global_id = 12
+event_type = enter
+timestamp = 8.42
+frame_id = 252
+category = superai_shirt
+```
+
+ไฟล์นี้ช่วยตรวจสอบว่าแต่ละ enter/exit เกิดขึ้นตอนไหน และเกิดจาก Global ID คนใด
+
+### 5. Performance Report
+
+```txt
+outputs/performance_report.json
+```
+
+ไฟล์นี้เก็บข้อมูลความเร็วและ latency ของระบบ เช่น:
+
+```json
+{
+  "processed_frames": 2548,
+  "total_processing_time_seconds": 556.67,
+  "avg_fps": 4.58,
+  "avg_total_time_ms": 200.35,
+  "p95_latency_ms": 326.38,
+  "avg_tracking_time_ms": 78.05,
+  "avg_reid_attribute_time_ms": 82.62,
+  "avg_counting_time_ms": 0.13,
+  "avg_visualization_time_ms": 22.15
+}
+```
+
+เหตุผลที่ต้องมี performance report คือไม่ควรบอกแค่ว่า “ระบบเร็ว” แต่ต้องวัดจริงว่าแต่ละส่วนใช้เวลาเท่าไร โดยเฉพาะ:
+
+- tracking
+- ReID + attribute classification
+- counting
+- visualization
+- total latency
+
+### Why Export Matters
+
+การ export หลายรูปแบบช่วยให้ระบบตรวจสอบได้มากกว่าการดูวิดีโออย่างเดียว:
+
+- `output_video.mp4` ใช้ดูผลแบบ visual
+- `summary.json` ใช้สรุปคำตอบสุดท้าย
+- `tracks.csv` ใช้ตรวจ Global ID / ReID
+- `events.csv` ใช้ตรวจ enter/exit event
+- `performance_report.json` ใช้แสดงความเร็วและความเป็นระบบ
+
+## Review Artifacts
+
+นอกจากวิดีโอ annotated และไฟล์สรุปผล ระบบยัง export ภาพ crop สำหรับ manual review เพื่อช่วยตรวจสอบคุณภาพของ Global ID, ReID และ Attribute Classification
+
+เหตุผลที่ต้องมีส่วนนี้ เพราะระบบนับคนจากวิดีโอจริงมีความไม่แน่นอน เช่น คนถูกบัง, tracker เปลี่ยน ID, เสื้อเห็นไม่ชัด หรือคนไม่ได้ใส่เสื้อ SuperAI แต่มีป้าย/สายคล้องคอ การมี review artifacts ช่วยให้ตรวจผลย้อนหลังได้เป็นระบบมากกว่าการดูวิดีโออย่างเดียว
+
+### 1. Head Crops for Identity Review
+
+```txt
+outputs/head_crops/
+outputs/head_contact_sheet.jpg
+```
+
+ระบบ crop บริเวณศีรษะโดยประมาณจาก person bounding box แล้วบันทึกแยกตาม Global ID เช่น:
+
+```txt
+outputs/head_crops/G001/
+outputs/head_crops/G002/
+outputs/head_crops/G003/
+```
+
+ตัวอย่างไฟล์:
+
+```txt
+outputs/head_crops/G012/frame_000420_T31.jpg
+```
+
+ความหมาย:
+
+- `G012` = Global ID ที่ระบบใช้เป็น anonymous person ID
+- `frame_000420` = frame ที่ crop มาจากวิดีโอ
+- `T31` = tracker ID ตอนนั้น
+
+`head_contact_sheet.jpg` คือภาพรวมที่ดึงตัวอย่าง head crop ของแต่ละ Global ID มาเรียงกัน เพื่อให้ตรวจเร็วว่า Global ID ซ้ำหรือแตกผิดหรือไม่
+
+จุดประสงค์ของ Head Crops:
+
+- ตรวจว่า Global ID เดียวกันยังดูเป็นคนเดิมหรือไม่
+- ตรวจว่าคนเดียวกันถูกแยกเป็นหลาย Global ID หรือเปล่า
+- ตรวจว่า ReID merge คนผิดหรือไม่
+- ใช้ประกอบการอธิบายว่าระบบมี manual audit process
+
+หมายเหตุสำคัญ:
+
+ระบบนี้ไม่ได้ทำ automatic face recognition และไม่ได้ใช้ใบหน้าเป็น biometric identity matching ภาพ head crop เป็นเพียง artifact สำหรับให้มนุษย์ตรวจสอบย้อนหลังด้วยสายตาเท่านั้น
+
+### 2. Review Crops for Attribute Classification
+
+```txt
+outputs/review_crops/
+outputs/review_crops/non_superai_contact_sheet.jpg
+outputs/review_crops/unknown_contact_sheet.jpg
+```
+
+ระบบ export full-body crop สำหรับ category ที่ควรตรวจเพิ่ม เช่น:
+
+- `non_superai`
+- `unknown`
+
+ตัวอย่างโครงสร้างไฟล์:
+
+```txt
+outputs/review_crops/non_superai/G004/frame_000104_T10.jpg
+outputs/review_crops/unknown/G021/frame_000660_T53.jpg
+```
+
+เหตุผลที่ต้อง export กลุ่มนี้:
+
+- `non_superai` ควรแปลว่า “มั่นใจว่าไม่ใช่ SuperAI” จึงควรตรวจได้
+- `unknown` คือกลุ่มที่ระบบไม่มั่นใจ ไม่ควรเดาสุ่ม
+- บางคนอาจไม่ได้ใส่เสื้อ SuperAI แต่มีป้ายหรือสายคล้องคอ
+- บางเฟรมอาจ crop เสื้อไม่ครบ หรือถูกบัง
+- แสงและ motion blur อาจทำให้ HSV classifier สับสน
+
+ใน review crop จะมี label เช่น:
+
+```txt
+G004 T10 non_superai det=0.36 attr=0.88
+```
+
+ความหมาย:
+
+- `G004` = Global ID
+- `T10` = Tracker ID
+- `non_superai` = category ที่ระบบให้
+- `det` = detection confidence
+- `attr` = attribute confidence
+
+### 3. Contact Sheets
+
+ระบบสร้าง contact sheet เพื่อดูหลายคนพร้อมกันได้รวดเร็ว
+
+```txt
+outputs/head_contact_sheet.jpg
+outputs/review_crops/non_superai_contact_sheet.jpg
+outputs/review_crops/unknown_contact_sheet.jpg
+```
+
+ประโยชน์:
+
+- ตรวจคนจำนวนมากได้เร็ว
+- เห็น pattern ความผิดพลาดของระบบ
+- ใช้ประกอบการ tuning threshold
+- ใช้เป็นหลักฐานว่า pipeline ไม่ได้แค่ print count แต่มีขั้นตอนตรวจสอบผล
+
+### 4. Why This Matters
+
+Review artifacts ทำให้ระบบมีความน่าเชื่อถือขึ้น เพราะสามารถตอบคำถามเหล่านี้ได้:
+
+```txt
+คนนี้ถูกนับซ้ำไหม?
+Global ID นี้เป็นคนเดียวกันจริงไหม?
+คนที่เป็น non_superai ถูกจัดถูกหรือเปล่า?
+unknown เกิดจากอะไร?
+event เข้า/ออกมาจากคนคนไหน?
+```

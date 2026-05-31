@@ -9,7 +9,7 @@ from tqdm import tqdm
 from src.config.settings import load_settings
 from src.counter import CountSummary, LineCrossingCounter, ZoneSequenceCounter
 from src.debug_video_writer import DebugVideoWriter
-from src.io.artifacts import ResultExporter
+from src.io.artifacts import HeadVerifier, ResultExporter, ReviewCropExporter
 from src.io.video import VideoReader
 from src.metrics import PerformanceMeter
 from src.utils import ensure_dir
@@ -21,9 +21,7 @@ from src.visualization.renderer import TrackingPreview
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Smart entrance people analytics.",
-    )
+    parser = argparse.ArgumentParser(description="Smart entrance people analytics.")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--show", action="store_true")
@@ -92,6 +90,8 @@ def main() -> None:
     reid_cfg = config["reid"]
     counting_cfg = config["counting"]
     attribute_cfg = config["attribute"]
+    head_cfg = config.get("head_verification", {})
+    review_cfg = config.get("review_export", {})
     export_cfg = config["export"]
     debug_video_cfg = config.get("debug_video", {})
 
@@ -130,6 +130,28 @@ def main() -> None:
     )
     exporter = ResultExporter("outputs")
     meter = PerformanceMeter()
+
+    head_verifier = None
+    if head_cfg.get("enabled", True):
+        head_verifier = HeadVerifier(
+            output_dir=head_cfg.get("output_dir", "outputs/head_crops"),
+            contact_sheet_path=head_cfg.get("contact_sheet_path", "outputs/head_contact_sheet.jpg"),
+            max_crops_per_id=head_cfg.get("max_crops_per_id", 6),
+            min_frame_gap=head_cfg.get("min_frame_gap", 18),
+            head_height_ratio=head_cfg.get("head_height_ratio", 0.24),
+            head_width_shrink=head_cfg.get("head_width_shrink", 0.18),
+            crop_padding=head_cfg.get("crop_padding", 0.18),
+        )
+
+    review_exporter = None
+    if review_cfg.get("enabled", True):
+        review_exporter = ReviewCropExporter(
+            output_dir=review_cfg.get("output_dir", "outputs/review_crops"),
+            categories=review_cfg.get("categories", ["non_superai", "unknown"]),
+            max_crops_per_id=review_cfg.get("max_crops_per_id", 4),
+            min_frame_gap=review_cfg.get("min_frame_gap", 24),
+            crop_padding=review_cfg.get("crop_padding", 0.08),
+        )
 
     info = reader.info()
     output_video_path = video_cfg.get(
@@ -189,6 +211,37 @@ def main() -> None:
                             attribute=attribute,
                             active_global_ids=active_global_ids,
                         )
+
+                        if head_verifier is not None:
+                            head_bbox = head_verifier.estimate_head_bbox(
+                                tracked_object.bbox,
+                                video_frame.frame.shape,
+                            )
+                            observation.head_bbox = head_bbox
+
+                            if head_cfg.get("save_crops", True):
+                                head_verifier.save_crop_if_needed(
+                                    frame=video_frame.frame,
+                                    global_id=observation.global_id,
+                                    track_id=observation.track_id,
+                                    frame_id=observation.frame_id,
+                                    timestamp=observation.timestamp,
+                                    head_bbox=head_bbox,
+                                )
+
+                        if review_exporter is not None:
+                            review_exporter.save_if_needed(
+                                frame=video_frame.frame,
+                                category=observation.category,
+                                global_id=observation.global_id,
+                                track_id=observation.track_id,
+                                frame_id=observation.frame_id,
+                                timestamp=observation.timestamp,
+                                bbox=observation.bbox,
+                                confidence=observation.confidence,
+                                category_confidence=observation.category_confidence,
+                            )
+
                         observations.append(observation)
                         active_global_ids.add(observation.global_id)
 
@@ -270,6 +323,13 @@ def main() -> None:
             except Exception:
                 pass
 
+    if head_verifier is not None:
+        head_verifier.write_contact_sheet()
+
+    review_contact_sheets = []
+    if review_exporter is not None:
+        review_contact_sheets = review_exporter.write_contact_sheets()
+
     profiles = global_id_manager.get_profiles()
     confirmed_profiles = valid_profiles(
         profiles,
@@ -319,7 +379,6 @@ def main() -> None:
         for track_id, state in track_states.items()
         if state.hits >= min_track_length
     }
-
     avg_tracks_per_frame = (
         total_active_tracks_seen / processed_frames if processed_frames > 0 else 0.0
     )
@@ -356,6 +415,15 @@ def main() -> None:
     print("* outputs/tracks.csv")
     print("* outputs/events.csv")
     print("* outputs/performance_report.json")
+
+    if head_verifier is not None:
+        print("* outputs/head_contact_sheet.jpg")
+        print("* outputs/head_crops/")
+
+    if review_exporter is not None:
+        print("* outputs/review_crops/")
+        for path in review_contact_sheets:
+            print(f"* {path}")
 
 
 if __name__ == "__main__":

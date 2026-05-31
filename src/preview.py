@@ -15,6 +15,7 @@ class DrawableObject(Protocol):
     confidence: float
     category: str
     category_confidence: float
+    head_bbox: tuple[int, int, int, int] | None
 
     @property
     def center(self) -> tuple[float, float]:
@@ -88,6 +89,7 @@ class TrackingPreview:
         self.trajectories[global_id].append(foot_point)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        self._draw_head_box(frame, obj)
         self._draw_trajectory(frame, global_id, color)
 
         cv2.circle(frame, foot_point, 4, color, -1)
@@ -96,6 +98,18 @@ class TrackingPreview:
         label = f"G{global_id} T{obj.track_id}"
         sub_label = f"{category.replace('_', ' ')} {category_conf:.2f}"
         self._draw_label(frame, (x1, max(4, y1 - 48)), label, sub_label, color)
+
+    @staticmethod
+    def _draw_head_box(frame: np.ndarray, obj: DrawableObject) -> None:
+        head_bbox = getattr(obj, "head_bbox", None)
+        if head_bbox is None:
+            return
+
+        x1, y1, x2, y2 = [int(v) for v in head_bbox]
+        if x2 <= x1 or y2 <= y1:
+            return
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 255, 220), 1)
 
     def _draw_label(
         self,
@@ -114,26 +128,8 @@ class TrackingPreview:
         cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
         cv2.rectangle(frame, (x, y), (x + 5, y + h), color, -1)
 
-        cv2.putText(
-            frame,
-            title,
-            (x + 12, y + 18),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame,
-            subtitle,
-            (x + 12, y + 34),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.40,
-            (190, 190, 190),
-            1,
-            cv2.LINE_AA,
-        )
+        cv2.putText(frame, title, (x + 12, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, subtitle, (x + 12, y + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (190, 190, 190), 1, cv2.LINE_AA)
 
     def _draw_overlay(
         self,
@@ -147,42 +143,12 @@ class TrackingPreview:
         panel_w, panel_h = 540, 224
 
         overlay = frame.copy()
-        cv2.rectangle(
-            overlay,
-            (panel_x, panel_y),
-            (panel_x + panel_w, panel_y + panel_h),
-            (12, 12, 12),
-            -1,
-        )
+        cv2.rectangle(overlay, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (12, 12, 12), -1)
         cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
-        cv2.rectangle(
-            frame,
-            (panel_x, panel_y),
-            (panel_x + panel_w, panel_y + panel_h),
-            (85, 85, 85),
-            1,
-        )
+        cv2.rectangle(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (85, 85, 85), 1)
 
-        cv2.putText(
-            frame,
-            "LIVE ENTRANCE ANALYTICS",
-            (panel_x + 16, panel_y + 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.68,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame,
-            f"Frame {frame_id} | Visible {len(tracked_objects)}",
-            (panel_x + 16, panel_y + 56),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (205, 205, 205),
-            1,
-            cv2.LINE_AA,
-        )
+        cv2.putText(frame, "LIVE ENTRANCE ANALYTICS", (panel_x + 16, panel_y + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Frame {frame_id} | Visible {len(tracked_objects)}", (panel_x + 16, panel_y + 56), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (205, 205, 205), 1, cv2.LINE_AA)
 
         if count_summary is not None:
             self._draw_metric_card(frame, panel_x + 16, panel_y + 72, "Realtime Unique", str(count_summary.total_unique_people), (255, 255, 255))
@@ -195,14 +161,7 @@ class TrackingPreview:
         self._draw_metric_card(frame, panel_x + 16, panel_y + 176, "Unknown", str(category_counts.get("unknown", 0)), self._category_colors()["unknown"])
 
     @staticmethod
-    def _draw_metric_card(
-        frame: np.ndarray,
-        x: int,
-        y: int,
-        label: str,
-        value: str,
-        color: tuple[int, int, int],
-    ) -> None:
+    def _draw_metric_card(frame: np.ndarray, x: int, y: int, label: str, value: str, color: tuple[int, int, int]) -> None:
         cv2.rectangle(frame, (x, y), (x + 174, y + 42), (28, 28, 28), -1)
         cv2.rectangle(frame, (x, y), (x + 174, y + 42), (70, 70, 70), 1)
         cv2.putText(frame, label, (x + 10, y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (180, 180, 180), 1, cv2.LINE_AA)
@@ -221,16 +180,7 @@ class TrackingPreview:
 
         for label, color in items:
             cv2.rectangle(frame, (x, y), (x + 18, y + 18), color, -1)
-            cv2.putText(
-                frame,
-                label,
-                (x + 28, y + 15),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
-                (235, 235, 235),
-                1,
-                cv2.LINE_AA,
-            )
+            cv2.putText(frame, label, (x + 28, y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (235, 235, 235), 1, cv2.LINE_AA)
             y += 26
 
     def _draw_zones(self, frame: np.ndarray, zones: dict) -> None:
@@ -248,16 +198,7 @@ class TrackingPreview:
             cv2.polylines(frame, [polygon], True, color, 3)
 
             label_point = tuple(polygon[0])
-            cv2.putText(
-                frame,
-                zone_name.upper(),
-                (int(label_point[0]) + 8, int(label_point[1]) + 26),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                color,
-                2,
-                cv2.LINE_AA,
-            )
+            cv2.putText(frame, zone_name.upper(), (int(label_point[0]) + 8, int(label_point[1]) + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
 
         cv2.addWeighted(overlay, 0.13, frame, 0.87, 0, frame)
 
@@ -267,12 +208,7 @@ class TrackingPreview:
         p2 = tuple(line_points[1])
         cv2.line(frame, p1, p2, (0, 0, 255), 3)
 
-    def _draw_trajectory(
-        self,
-        frame: np.ndarray,
-        global_id: int,
-        color: tuple[int, int, int],
-    ) -> None:
+    def _draw_trajectory(self, frame: np.ndarray, global_id: int, color: tuple[int, int, int]) -> None:
         points = list(self.trajectories[global_id])
         if len(points) < 2:
             return

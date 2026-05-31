@@ -329,3 +329,119 @@ Exit Count: ...
 - เพิ่ม review crops สำหรับตรวจสอบคนที่ระบบไม่มั่นใจ
 - ปรับ visualization ให้เหมือน final dashboard
 - รองรับ ReID model จริง เช่น OSNet หรือ FastReID
+
+## Attribute Classification
+
+ระบบแยกประเภทคนจากลักษณะเสื้อ โดยใช้ rule-based HSV classifier เป็น baseline ที่รันง่ายและอธิบายได้ชัดเจน
+
+แนวคิดคือไม่ classify จากทั้งภาพ เพราะทั้งภาพมี background, ประตู, ผนัง และคนอื่นปนอยู่ ระบบจะ crop เฉพาะบริเวณ upper body ของ bounding box ก่อน แล้วค่อยวิเคราะห์สี
+
+### Classes
+
+ระบบแบ่งเป็น 3 กลุ่ม:
+
+- `superai_shirt`: มีหลักฐานสีน้ำเงิน/ฟ้าของเสื้อ SuperAI ชัดเจน
+- `non_superai`: มั่นใจว่าไม่ใช่เสื้อ SuperAI
+- `unknown`: ยังไม่มั่นใจ เช่น โดนบัง แสงไม่ดี เห็นเสื้อไม่ครบ หรือมีสีน้ำเงินเล็กน้อยแต่ไม่พอพิสูจน์
+
+> `non_superai` ไม่ได้แปลว่า unknown แต่แปลว่า “ระบบมั่นใจว่าไม่ใช่ SuperAI”
+>
+> ถ้าหลักฐานไม่พอ ระบบจะเลือก `unknown` แทนการเดาสุ่ม
+
+### How It Works
+
+ขั้นตอนต่อเฟรม:
+
+```txt
+person bbox
+-> crop upper body
+-> convert BGR to HSV
+-> calculate blue pixel ratio
+-> calculate dark/non-blue evidence
+-> return frame-level category
+```
+
+จากนั้นระบบไม่ใช้ผลจากเฟรมเดียวทันที แต่เก็บ vote ไว้ใน `GlobalPersonProfile`
+
+```txt
+frame-level prediction
+-> category vote per Global ID
+-> majority / confidence rule
+-> final category per person
+```
+
+ตัวอย่าง:
+
+```txt
+G12:
+frame 101 = superai_shirt
+frame 102 = superai_shirt
+frame 103 = unknown
+frame 104 = superai_shirt
+
+final category = superai_shirt
+```
+
+อีกตัวอย่าง:
+
+```txt
+G25:
+frame 320 = non_superai
+frame 321 = non_superai
+frame 322 = unknown
+frame 323 = non_superai
+
+final category = non_superai
+```
+
+### Why Majority Vote
+
+การใช้เฟรมเดียวอาจผิดได้จากหลายสาเหตุ:
+
+- คนถูกบังบางส่วน
+- motion blur
+- แสงเปลี่ยน
+- crop ไปโดนแขนหรือป้าย
+- เสื้อ SuperAI เห็นแค่บางส่วน
+- background มีสีใกล้เคียงเสื้อ
+
+ดังนั้นระบบจึงใช้หลายเฟรมเพื่อให้ category เสถียรกว่า
+
+### Decision Logic
+
+หลักการตัดสินแบบย่อ:
+
+```txt
+ถ้า blue ratio สูงพอ -> superai_shirt
+ถ้ามีหลักฐาน non-blue ชัด และ blue ต่ำ -> non_superai
+ถ้าหลักฐานไม่พอหรือคลุมเครือ -> unknown
+```
+
+ในระดับ Global ID:
+
+```txt
+ถ้ามี SuperAI votes มากพอ -> superai_shirt
+ถ้ามี non-SuperAI votes ต่อเนื่องพอ และ SuperAI evidence ไม่เด่น -> non_superai
+ถ้ายังไม่ชัด -> unknown
+```
+
+### Dashboard
+
+วิดีโอ output จะแสดงจำนวนรวมของ category ที่ผ่าน Global ID filtering แล้ว:
+
+```txt
+SuperAI
+Non-SuperAI
+Unknown
+```
+
+จำนวนนี้นับจาก `Global ID` ไม่ใช่จำนวน bounding box ในเฟรม
+
+### Limitation
+
+วิธีนี้เป็น color-based classifier จึงยังมีข้อจำกัด:
+
+- ถ้าแสงเพี้ยน สีเสื้ออาจผิด
+- ถ้าเสื้อถูกบังมาก ระบบอาจให้ `unknown`
+- ถ้าคนไม่ได้ใส่เสื้อ SuperAI แต่มีป้ายหรือสายคล้อง ระบบอาจต้องใช้ review crop หรือ classifier ที่ train เพิ่ม
+- ถ้าเสื้อสีคล้าย SuperAI อาจเกิด false positive ได้

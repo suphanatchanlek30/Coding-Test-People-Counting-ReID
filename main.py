@@ -11,6 +11,7 @@ from src.counter import CountSummary, LineCrossingCounter, ZoneSequenceCounter
 from src.debug_video_writer import DebugVideoWriter
 from src.io.video import VideoReader
 from src.utils import ensure_dir
+from src.vision.attributes import HSVAttributeClassifier
 from src.vision.identity import GlobalIDManager, GlobalPersonProfile
 from src.vision.reid import ColorHistogramReID
 from src.vision.tracking import MultiObjectTracker
@@ -21,29 +22,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Smart entrance people analytics.",
     )
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to YAML configuration file.",
-    )
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=None,
-        help="Optional limit for quick tests.",
-    )
-    parser.add_argument(
-        "--show",
-        action="store_true",
-        help="Show OpenCV preview window. Press q to stop.",
-    )
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--show", action="store_true")
     return parser.parse_args()
 
 
 def build_counter(counting_cfg: dict):
-    counting_mode = counting_cfg.get("mode", "line")
-
-    if counting_mode == "zone":
+    if counting_cfg.get("mode", "line") == "zone":
         return ZoneSequenceCounter(
             zones=counting_cfg["zones"],
             min_movement_pixels=counting_cfg.get("min_movement_pixels", 20),
@@ -87,6 +73,10 @@ def build_live_summary(
     )
 
 
+def profile_category_counts(profiles: dict[int, GlobalPersonProfile]) -> Counter[str]:
+    return Counter(profile.final_category()[0] for profile in profiles.values())
+
+
 def main() -> None:
     args = parse_args()
     settings = load_settings(args.config)
@@ -99,6 +89,7 @@ def main() -> None:
     tracking_cfg = config["tracking"]
     reid_cfg = config["reid"]
     counting_cfg = config["counting"]
+    attribute_cfg = config["attribute"]
     debug_video_cfg = config.get("debug_video", {})
 
     reader = VideoReader(
@@ -123,6 +114,12 @@ def main() -> None:
         spatial_weight=reid_cfg.get("spatial_weight", 0.25),
         temporal_weight=reid_cfg.get("temporal_weight", 0.15),
         allow_long_gap_reentry=reid_cfg.get("allow_long_gap_reentry", True),
+        category_consistency_bonus=reid_cfg.get("category_consistency_bonus", 0.04),
+    )
+    attribute_classifier = HSVAttributeClassifier(
+        blue_ratio_threshold=attribute_cfg.get("blue_ratio_threshold", 0.18),
+        black_ratio_threshold=attribute_cfg.get("black_ratio_threshold", 0.35),
+        detect_staff_black=attribute_cfg.get("detect_staff_black", False),
     )
     counter = build_counter(counting_cfg)
     renderer = TrackingPreview(
@@ -155,8 +152,8 @@ def main() -> None:
     processed_frames = 0
     total_active_tracks_seen = 0
     max_tracks_in_frame = 0
-    track_count_distribution: Counter[int] = Counter()
     last_count_summary = CountSummary()
+    last_category_counts = Counter()
 
     try:
         total = args.max_frames or info.total_frames
@@ -175,9 +172,14 @@ def main() -> None:
             active_global_ids: set[int] = set()
 
             for tracked_object in tracked_objects:
+                attribute = attribute_classifier.classify(
+                    video_frame.frame,
+                    tracked_object.bbox,
+                )
                 observation = global_id_manager.update(
                     frame=video_frame.frame,
                     tracked_object=tracked_object,
+                    attribute=attribute,
                     active_global_ids=active_global_ids,
                 )
                 observations.append(observation)
@@ -195,17 +197,27 @@ def main() -> None:
                 min_track_length=min_track_length,
                 min_avg_confidence=min_avg_confidence,
             )
+
+            for observation in observations:
+                profile = current_profiles.get(observation.global_id)
+                if profile is not None:
+                    category, category_confidence = profile.final_category()
+                    observation.category = category
+                    observation.category_confidence = category_confidence
+
             last_count_summary = build_live_summary(
                 profiles=current_profiles,
                 active_global_ids=active_global_ids,
                 events=counter.get_events(),
             )
+            last_category_counts = profile_category_counts(current_profiles)
 
             annotated_frame = renderer.draw(
                 frame=video_frame.frame,
                 tracked_objects=observations,
                 frame_id=video_frame.frame_id,
                 count_summary=last_count_summary,
+                category_counts=dict(last_category_counts),
                 line_points=(
                     counting_cfg["line_points"]
                     if counting_mode == "line"
@@ -232,11 +244,9 @@ def main() -> None:
                     break
 
             active_count = len(observations)
-
             processed_frames += 1
             total_active_tracks_seen += active_count
             max_tracks_in_frame = max(max_tracks_in_frame, active_count)
-            track_count_distribution[active_count] += 1
 
     finally:
         reader.release()
@@ -256,12 +266,14 @@ def main() -> None:
         min_track_length=min_track_length,
         min_avg_confidence=min_avg_confidence,
     )
-
     events = [
         event
         for event in counter.get_events()
         if event.person_id in confirmed_profiles
     ]
+
+    final_category_counts = profile_category_counts(confirmed_profiles)
+
     enter_count = sum(1 for event in events if event.event_type == "enter")
     exit_count = sum(1 for event in events if event.event_type == "exit")
 
@@ -277,7 +289,7 @@ def main() -> None:
     )
 
     print()
-    print("Identity-aware counting test completed.")
+    print("Identity-aware people analytics completed.")
     print(f"Processed frames: {processed_frames}")
     print(f"Raw track IDs found: {len(track_states)}")
     print(f"Valid track IDs with length >= {min_track_length}: {len(valid_tracks)}")
@@ -287,11 +299,13 @@ def main() -> None:
     print(f"Max active tracks in one frame: {max_tracks_in_frame}")
 
     print()
-    print("Counting result based on Global ID:")
+    print("Final Result:")
     print(f"* Total Unique People: {len(confirmed_profiles)}")
     print(f"* Enter Count: {enter_count}")
     print(f"* Exit Count: {exit_count}")
-    print(f"* Events: {len(events)}")
+    print(f"* SuperAI People: {final_category_counts.get('superai_shirt', 0)}")
+    print(f"* Non-SuperAI People: {final_category_counts.get('non_superai', 0)}")
+    print(f"* Unknown: {final_category_counts.get('unknown', 0)}")
 
     print()
     print("Saved:")
